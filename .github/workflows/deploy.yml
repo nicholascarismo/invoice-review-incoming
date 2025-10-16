@@ -21,12 +21,10 @@ jobs:
           mkdir -p ~/.ssh
           ssh-keyscan -H -p 22 ${{ secrets.DROPLET_HOST }} >> ~/.ssh/known_hosts
 
-      # Ensure remote dir exists (first deploy) and rsync code (every deploy)
-      # We do NOT create .env locally; we write it on the server from ENV_FILE.
       - name: Ensure remote directory exists
-        run: ssh "${{ secrets.DROPLET_USER }}@${{ secrets.DROPLET_HOST }}" "mkdir -p '${{ secrets.REMOTE_DIR }}'"
+        run: ssh "${{ secrets.DROPLET_USER }}@${{ secrets.DROPLET_HOST }}" "mkdir -p '${{ secrets.REMOTE_DIR }}' '${{ secrets.REMOTE_DIR }}/data'"
 
-      - name: Rsync repo to droplet (preserve server-side data/)
+      - name: Rsync repo to droplet (preserve server data/)
         run: |
           rsync -az --delete \
             --exclude 'node_modules' \
@@ -35,39 +33,43 @@ jobs:
             --exclude 'data/' \
             ./  "${{ secrets.DROPLET_USER }}@${{ secrets.DROPLET_HOST }}:${{ secrets.REMOTE_DIR }}/"
 
+      # Create a temp .env on the runner from the secret (NOT committed), then upload it
+      - name: Prepare .env from ENV_FILE (runner only)
+        run: |
+          printf "%s" "${{ secrets.ENV_FILE }}" > .env.deploy
+
+      - name: Upload .env to server
+        run: |
+          scp .env.deploy "${{ secrets.DROPLET_USER }}@${{ secrets.DROPLET_HOST }}:${{ secrets.REMOTE_DIR }}/.env"
+          rm -f .env.deploy
+
       - name: Install deps & (re)start with PM2
-        run: >
-          ssh "${{ secrets.DROPLET_USER }}@${{ secrets.DROPLET_HOST }}"
-          "bash -lc 'set -euo pipefail;
-            # Make pm2 available in non-login shell
-            [ -f ~/.profile ] && . ~/.profile || true;
-            [ -f ~/.bashrc ] && . ~/.bashrc || true;
+        run: |
+          ssh "${{ secrets.DROPLET_USER }}@${{ secrets.DROPLET_HOST }}" "bash -lc '
+            set -euo pipefail
+            [ -f ~/.profile ] && . ~/.profile || true
+            [ -f ~/.bashrc ] && . ~/.bashrc || true
 
-            APP_DIR=\"${{ secrets.REMOTE_DIR }}\";
-            APP_NAME=\$(basename \"$APP_DIR\");
-            mkdir -p \"$APP_DIR\" \"$APP_DIR/data\";
-            cd \"$APP_DIR\";
+            APP_DIR=\"${{ secrets.REMOTE_DIR }}\"
+            APP_NAME=\$(basename \"$APP_DIR\")
+            cd \"$APP_DIR\"
 
-            # Write .env on the server from the ENV_FILE secret (authoritative source)
-            cat > .env <<ENV_HERE
-${{ secrets.ENV_FILE }}
-ENV_HERE
-
-            export NPM_CONFIG_FUND=false;
+            export NPM_CONFIG_FUND=false
             if [ ! -f package-lock.json ]; then
-              npm install --package-lock-only;
-            fi;
-            npm ci --omit=dev;
+              npm install --package-lock-only
+            fi
+            npm ci --omit=dev
 
-            PM2=\$(command -v pm2 || true);
+            PM2=\$(command -v pm2 || true)
             if [ -z \"$PM2\" ]; then
-              echo \"pm2 not found on PATH for user \$USER\" >&2; exit 1;
-            fi;
+              echo \"pm2 not found on PATH for user \$USER\" >&2; exit 1
+            fi
 
             if pm2 list | grep -Eq \"^[[:space:]]*\$APP_NAME[[:space:]]\"; then
-              pm2 reload \"\$APP_NAME\" --update-env;
+              pm2 reload \"\$APP_NAME\" --update-env
             else
-              pm2 start index.js --name \"\$APP_NAME\";
-            fi;
+              pm2 start index.js --name \"\$APP_NAME\"
+            fi
 
-            pm2 save'"
+            pm2 save
+          '"
