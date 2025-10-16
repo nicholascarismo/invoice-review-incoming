@@ -52,7 +52,20 @@ jobs:
 
             APP_DIR=\"${{ secrets.REMOTE_DIR }}\"
             APP_NAME=\$(basename \"$APP_DIR\")
-            cd \"$APP_DIR\"
+            echo \"APP_DIR=\$APP_DIR\"
+            echo \"APP_NAME=\$APP_NAME\"
+
+            # Show what rsync actually put there
+            ls -la \"\$APP_DIR\" || true
+
+            cd \"\$APP_DIR\"
+
+            # Guard: make sure we are in the app folder
+            if [ ! -f package.json ]; then
+              echo \"❌ package.json not found in \$APP_DIR\" >&2
+              echo \"   Did you set REMOTE_DIR to /home/app/apps/invoice-review-incoming ?\" >&2
+              exit 2
+            fi
 
             export NPM_CONFIG_FUND=false
             if [ ! -f package-lock.json ]; then
