@@ -48,9 +48,9 @@ jobs:
               npm install --package-lock-only;
             fi;
             npm ci --omit=dev;
-            if pm2 describe daily-needphotonoship-reminder >/dev/null 2>&1; then
-              pm2 reload daily-needphotonoship-reminder --update-env;
+            if pm2 describe needphotonoship-reply-from-customer >/dev/null 2>&1; then
+              pm2 reload needphotonoship-reply-from-customer --update-env;
             else
-              pm2 start index.js --name daily-needphotonoship-reminder;
+              pm2 start index.js --name needphotonoship-reply-from-customer;
             fi;
             pm2 save'"

@@ -1,0 +1,14 @@
+{
+  "name": "invoice-review-incoming",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "dev": "node --watch index.js",
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@slack/bolt": "^3.18.0",
+    "dotenv": "^16.4.5"
+  }
+}
