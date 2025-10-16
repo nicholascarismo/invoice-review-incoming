@@ -47,46 +47,35 @@ jobs:
         run: |
           ssh "${{ secrets.DROPLET_USER }}@${{ secrets.DROPLET_HOST }}" "bash -lc '
             set -euo pipefail
-            # Make env look like an interactive login (helps PATH)
+            # Favor having PATH like a login shell
             [ -f ~/.profile ] && . ~/.profile || true
             [ -f ~/.bashrc ] && . ~/.bashrc || true
             [ -f ~/.nvm/nvm.sh ] && . ~/.nvm/nvm.sh || true
 
-            # --- Resolve APP_DIR & APP_NAME robustly ---
+            # --- Resolve APP_DIR & APP_NAME (no fragile grep/sed) ---
             APP_DIR=\"${{ secrets.REMOTE_DIR }}\"
-            APP_DIR=\"${APP_DIR%/}\"   # strip trailing slash
+            APP_DIR=\"${APP_DIR%/}\"   # strip trailing /
             APP_NAME=\"\"
 
-            # 1) Prefer explicit secret if you set it (optional)
+            # 1) Optional explicit secret
             if [ -n \"${{ secrets.APP_NAME || '' }}\" ]; then
               APP_NAME=\"${{ secrets.APP_NAME || '' }}\"
             fi
 
             cd \"\$APP_DIR\"
 
-            # 2) If still empty, try package.json via jq or node
-            if [ -z \"\$APP_NAME\" ] && [ -f package.json ]; then
-              if command -v jq >/dev/null 2>&1; then
-                APP_NAME=\"\$(jq -r .name package.json 2>/dev/null || echo '')\"
-              fi
-              if [ -z \"\$APP_NAME\" ] && command -v node >/dev/null 2>&1; then
-                APP_NAME=\"\$(node -e \"try{console.log(require('./package.json').name||'')}catch(e){console.log('')}\")\"
-              fi
+            # 2) package.json via Node
+            if [ -z \"\$APP_NAME\" ] && [ -f package.json ] && command -v node >/dev/null 2>&1; then
+              APP_NAME=\"\$(node -p \"try{require('./package.json').name||''}catch(e){''}\")\"
             fi
 
-            # 3) If still empty, use folder basename
+            # 3) Fallback to folder name
             if [ -z \"\$APP_NAME\" ]; then
               APP_NAME=\"\$(basename \"\$APP_DIR\")\"
             fi
 
-            # 4) Last-resort: grep/sed from package.json
-            if [ -z \"\$APP_NAME\" ] && [ -f package.json ]; then
-              APP_NAME=\"\$(grep -m1 '\"name\"' package.json | sed -E 's/.*\"name\"[[:space:]]*:[[:space:]]*\"([^\"]+)\".*/\1/')\"
-            fi
-
             if [ -z \"\$APP_NAME\" ]; then
-              echo \"❌ Could not determine APP_NAME from secret/dir/package.json\" >&2
-              echo \"   Tip: set APP_NAME repo secret = your folder name.\" >&2
+              echo \"❌ Could not determine APP_NAME; set APP_NAME repo secret or ensure package.json has a name.\" >&2
               exit 3
             fi
 
@@ -95,23 +84,20 @@ jobs:
             echo \"Listing contents of APP_DIR:\"
             ls -la
 
-            # Ensure data dir exists (we preserve it during rsync)
-            mkdir -p data
-
-            # Ensure .env was uploaded in the prior step
+            # Ensure .env is there (uploaded in prior step)
             if [ ! -f .env ]; then
               echo \"❌ .env not found in \$APP_DIR (ENV_FILE upload step may have failed)\" >&2
               exit 4
             fi
 
-            # --- Install production deps ---
+            # Install production deps
             export NPM_CONFIG_FUND=false
             if [ ! -f package-lock.json ]; then
               npm install --package-lock-only
             fi
             npm ci --omit=dev
 
-            # --- Locate or install pm2; use absolute path ---
+            # Locate or install pm2; use absolute path so PATH quirks don\'t bite us
             PM2_PATH=\"\"
             if command -v pm2 >/dev/null 2>&1; then
               PM2_PATH=\"\$(command -v pm2)\"
@@ -132,7 +118,7 @@ jobs:
             fi
             echo \"Using PM2 at: \$PM2_PATH\"
 
-            # --- Start or reload by canonical name ---
+            # Start or reload under canonical name
             if \"\$PM2_PATH\" list | grep -Eq \"^[[:space:]]*\$APP_NAME[[:space:]]\"; then
               \"\$PM2_PATH\" reload \"\$APP_NAME\" --update-env
             else
