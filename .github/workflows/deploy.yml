@@ -47,42 +47,77 @@ jobs:
         run: |
           ssh "${{ secrets.DROPLET_USER }}@${{ secrets.DROPLET_HOST }}" "bash -lc '
             set -euo pipefail
+            # Make env look like an interactive login
             [ -f ~/.profile ] && . ~/.profile || true
             [ -f ~/.bashrc ] && . ~/.bashrc || true
+            [ -f ~/.nvm/nvm.sh ] && . ~/.nvm/nvm.sh || true
 
+            # Normalize APP_DIR and derive APP_NAME
             APP_DIR=\"${{ secrets.REMOTE_DIR }}\"
-            APP_NAME=\$(basename \"$APP_DIR\")
-            echo \"APP_DIR=\$APP_DIR\"
-            echo \"APP_NAME=\$APP_NAME\"
-
-            # Show what rsync actually put there
-            ls -la \"\$APP_DIR\" || true
-
+            APP_DIR=\"${APP_DIR%/}\"             # strip any trailing /
+            APP_NAME=\"\$(basename \"\$APP_DIR\")\"
             cd \"\$APP_DIR\"
 
-            # Guard: make sure we are in the app folder
-            if [ ! -f package.json ]; then
-              echo \"❌ package.json not found in \$APP_DIR\" >&2
-              echo \"   Did you set REMOTE_DIR to /home/app/apps/invoice-review-incoming ?\" >&2
-              exit 2
+            # Fallback: if APP_NAME empty (edge cases), read from package.json
+            if [ -z \"\$APP_NAME\" ]; then
+              if command -v node >/dev/null 2>&1 && [ -f package.json ]; then
+                APP_NAME=\"\$(node -e \"console.log(require('./package.json').name || '')\")\"
+              fi
+            fi
+            if [ -z \"\$APP_NAME\" ]; then
+              echo \"❌ Could not determine APP_NAME from REMOTE_DIR or package.json\" >&2
+              exit 3
             fi
 
+            echo \"APP_DIR=\$APP_DIR\"
+            echo \"APP_NAME=\$APP_NAME\"
+            echo \"Listing contents of APP_DIR:\"
+            ls -la
+
+            # Ensure data dir exists (we preserve it during rsync)
+            mkdir -p data
+
+            # Ensure .env is present (uploaded in prior step)
+            if [ ! -f .env ]; then
+              echo \"❌ .env not found in \$APP_DIR (ENV_FILE upload step failed?)\" >&2
+              exit 4
+            fi
+
+            # Install production deps
             export NPM_CONFIG_FUND=false
             if [ ! -f package-lock.json ]; then
               npm install --package-lock-only
             fi
             npm ci --omit=dev
 
-            PM2=\$(command -v pm2 || true)
-            if [ -z \"$PM2\" ]; then
-              echo \"pm2 not found on PATH for user \$USER\" >&2; exit 1
-            fi
-
-            if pm2 list | grep -Eq \"^[[:space:]]*\$APP_NAME[[:space:]]\"; then
-              pm2 reload \"\$APP_NAME\" --update-env
+            # Find or install pm2, then use its absolute path
+            PM2_PATH=\"\"
+            if command -v pm2 >/dev/null 2>&1; then
+              PM2_PATH=\"\$(command -v pm2)\"
             else
-              pm2 start index.js --name \"\$APP_NAME\"
+              echo \"pm2 not found; installing globally...\"
+              npm i -g pm2 >/dev/null 2>&1 || npm i -g pm2
+              if command -v pm2 >/dev/null 2>&1; then
+                PM2_PATH=\"\$(command -v pm2)\"
+              else
+                # Try common nvm/global locations
+                for p in \"\$HOME/.npm-global/bin/pm2\" \"\$HOME/.nvm/versions/node\"/*\"/bin/pm2\" \"/usr/local/bin/pm2\" \"/usr/bin/pm2\"; do
+                  [ -x \"\$p\" ] && PM2_PATH=\"\$p\" && break
+                done
+              fi
+            fi
+            if [ -z \"\$PM2_PATH\" ]; then
+              echo \"❌ Could not locate pm2 after install\" >&2
+              exit 5
+            fi
+            echo \"Using PM2 at: \$PM2_PATH\"
+
+            # Start or reload under fixed name
+            if \"\$PM2_PATH\" list | grep -Eq \"^[[:space:]]*\$APP_NAME[[:space:]]\"; then
+              \"\$PM2_PATH\" reload \"\$APP_NAME\" --update-env
+            else
+              \"\$PM2_PATH\" start index.js --name \"\$APP_NAME\"
             fi
 
-            pm2 save
+            \"\$PM2_PATH\" save
           '"
